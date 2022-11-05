@@ -1,73 +1,95 @@
-import asyncio
+import os
+from typing import Any
 
-from playwright.async_api import async_playwright
+from playwright.sync_api import sync_playwright
+from dotenv import load_dotenv
+
+from scraper.utils.constants import TIMEOUT, USER_DATA_DIR
+
+
+load_dotenv()
 
 
 class Scraper:
     def __init__(self) -> None:
-        pass
+        self.playwright = sync_playwright().start()
+        self.browser = self.playwright.firefox\
+            .launch_persistent_context(USER_DATA_DIR, headless=False)
 
-    async def test_scraper(self) -> None:
-        # async with async_playwright() as pw:
-        #     browser = await pw.chromium.launch(headless=False)
-        #     page = await browser.new_page()
-        #     await page.goto('https://shopee.com.br/shopee-coins')
+    def __del__(self) -> None:
+        if self.playwright and self.browser:
+            self.browser.close()
+            self.playwright.stop()
 
-        #     await asyncio.sleep(5)
-        #     print(await page.title())
-        #     await page.screenshot(path="data/example.png")
+    def new_page_logged_in(self) -> Any:
+        """Performs login and returns a new page.
+        With persistent context, MFA should be required just once.
+        """
+        print('* Realizar login.')
+        page = self.browser.new_page()
+        page.set_default_timeout(TIMEOUT)
 
-        #     await browser.close()
+        page.goto('https://shopee.com.br/buyer/login?next=https%3A%2F%2Fshopee.com.br%2Fshopee-coins')
+        page.wait_for_load_state()
 
-        user_data_dir = "/tmp/test-user-data-dir"
+        try:
+            page.get_by_text('Google').click()
 
-        async with async_playwright() as pw:
-            # Prepare browser
-            browser = await pw.firefox.launch_persistent_context(user_data_dir, headless=False)
-            page = await browser.new_page()
+            with page.expect_event('popup') as page_info:
+                popup = page_info.value
 
-            await page.goto('https://shopee.com.br/buyer/login?next=https%3A%2F%2Fshopee.com.br%2Fshopee-coins')
+                field = popup.get_by_role('textbox')
+                field.type(os.getenv('USER_EMAIL'))
+                field.press("Enter")
 
-            # Login
-            try:
-                await page.get_by_text('Google').click()
+                page.wait_for_load_state()
 
-                async with page.expect_event('popup') as page_info:
-                    popup = await page_info.value
+                field = popup.get_by_role('textbox')
+                field.type(os.getenv('USER_PASSWORD'))
+                field.press("Enter")
 
-                    field = popup.get_by_role('textbox')
-                    await field.type('')
-                    await field.press("Enter")
+                page.wait_for_load_state()
+        except Exception as error:
+            print('No MFA required.')
+            print(error)
 
-                    await asyncio.sleep(2)
-                    
-                    field = popup.get_by_role('textbox')
-                    await field.type('')
-                    await field.press("Enter")
-                    
-                    await asyncio.sleep(5)
-            except:
-                print('No MFA required.')
-            
-            # Get coin
-            try:
-                await page.get_by_text('Clique para ganhar 1 moeda').click()
-                print('Ganhar moeda.')
-                await page.screenshot(path="data/coin.png")
-            except:
-                print('Moeda já resgatada.')
-            
-            # Draw
-            try:
-                await page.get_by_text('Resgate até 1000 Moedas!').click()
-                print('Acessando página do sorteio.')
-                await asyncio.sleep(5)
-                await page.screenshot(path="data/draw.png")
+        print('Login realizado.')
+        return page
 
-                await page.query_selector('#clickArea').click()  # id="clickArea"
-                print('Sorteio realizado.')
-            except:
-                print('Sorteio já realizado.')
-            
-            await asyncio.sleep(1520)
-            await browser.close()
+    def get_daily_coins(self) -> None:
+        """Get daily coins. Previous login is required."""
+        print('* Ganhar moeda diária.')
+        page = self.new_page_logged_in()
+
+        try:
+            page.get_by_text('Clique para ganhar 1 moeda').click()
+            page.screenshot(path="data/coin.png")
+        except Exception as error:
+            print('Moeda já resgatada.')
+            print(error)
+
+        page.close()
+
+    def join_daily_draw(self) -> None:
+        """Get daily coins. Previous login is required."""
+        print('* Sorteio diário.')
+        page = self.new_page_logged_in()
+
+        try:
+            print('Acessando página do sorteio.')
+            page.get_by_text('Resgate até 1000 Moedas!').click()
+            page.wait_for_load_state()
+            page.screenshot(path="data/draw.png")
+        except Exception as error:
+            print('Sem acesso à página do sorteio.')
+            print(error)
+            return
+
+        try:
+            page.frame_locator("#main iframe").locator("#clickArea").click()
+            print('Sorteio realizado.')
+        except Exception as error:
+            print('Sorteio já realizado.')
+            print(error)
+
+        page.close()
